@@ -25,7 +25,7 @@ def main(url, format, cookies, input_proxy, device_index, device_recording_inter
          gpt_translation_prompt, gpt_translation_history_size, gpt_model, gemini_model, gpt_translation_timeout,
          gpt_base_url, gemini_base_url, processing_proxy, use_json_result, retry_if_translation_fails,
          output_timestamps, hide_transcribe_result, output_proxy, output_file_path, cqhttp_url, cqhttp_token,
-         discord_webhook_url, telegram_token, telegram_chat_id, **transcribe_options):
+         discord_webhook_url, telegram_token, telegram_chat_id, ws_host, ws_port, **transcribe_options):
     ApiKeyPool.init(openai_api_key=openai_api_key,
                     gpt_base_url=gpt_base_url,
                     google_api_key=google_api_key,
@@ -47,6 +47,8 @@ def main(url, format, cookies, input_proxy, device_index, device_recording_inter
         discord_webhook_url=discord_webhook_url,
         telegram_token=telegram_token,
         telegram_chat_id=telegram_chat_id,
+        ws_host=ws_host,
+        ws_port=ws_port,
         input_queue=translator_to_exporter_queue,
     )
     if gpt_translation_prompt:
@@ -200,6 +202,14 @@ def cli():
                         type=float,
                         default=0.5,
                         help='Slice if there is no speech for a continuous period in second.')
+    parser.add_argument('--ws_host',
+                        type=str,
+                        default='localhost',
+                        help='WebSocket server host address')
+    parser.add_argument('--ws_port',
+                        type=int,
+                        default=8765,
+                        help='WebSocket server port number')
     parser.add_argument('--min_audio_length', type=float, default=1.5, help='Minimum slice audio length in seconds.')
     parser.add_argument('--max_audio_length', type=float, default=15.0, help='Maximum slice audio length in seconds.')
     parser.add_argument('--prefix_retention_length',

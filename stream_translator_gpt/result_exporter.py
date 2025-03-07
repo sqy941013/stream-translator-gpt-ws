@@ -1,6 +1,10 @@
 import os
 import queue
 import requests
+import json
+from websockets.server import serve
+import asyncio
+import threading
 
 from .common import TranslationTask, LoopWorkerBase, sec2str
 
@@ -36,12 +40,72 @@ def _output_to_file(file_path: str, text: str):
         f.write(text + '\n\n')
 
 
-class ResultExporter(LoopWorkerBase):
+class WebSocketServer:
+    def __init__(self, host: str = 'localhost', port: int = 8765):
+        self.host = host
+        self.port = port
+        self.connected_clients = set()
+        self._server = None
+        self._server_task = None
 
-    def __init__(self, output_file_path: str) -> None:
+    async def handler(self, websocket):
+        self.connected_clients.add(websocket)
+        try:
+            await websocket.wait_closed()
+        finally:
+            self.connected_clients.remove(websocket)
+
+    async def broadcast(self, message):
+        if not self.connected_clients:
+            return
+        await asyncio.gather(
+            *[client.send(message) for client in self.connected_clients]
+        )
+
+    async def start_server(self):
+        self._server = await serve(self.handler, self.host, self.port)
+        print(f'WebSocket server started at ws://{self.host}:{self.port}')
+        await self._server.wait_closed()
+
+    def run_in_thread(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(self.start_server())
+
+    def start(self):
+        thread = threading.Thread(target=self.run_in_thread, daemon=True)
+        thread.start()
+        return thread
+
+
+class ResultExporter(LoopWorkerBase):
+    def __init__(self, output_file_path: str, ws_host: str = 'localhost', ws_port: int = 8765) -> None:
         if output_file_path:
             if os.path.exists(output_file_path):
                 os.remove(output_file_path)
+        
+        # Initialize WebSocket server
+        self.ws_server = WebSocketServer(ws_host, ws_port)
+        self.ws_server.start()
+
+    @classmethod
+    def work(cls, input_queue: queue.SimpleQueue[TranslationTask], output_whisper_result: bool,
+            output_timestamps: bool, proxy: str, output_file_path: str, cqhttp_url: str, cqhttp_token: str,
+            discord_webhook_url: str, telegram_token: str, telegram_chat_id: int, ws_host: str = 'localhost',
+            ws_port: int = 8765):
+        instance = cls(output_file_path=output_file_path, ws_host=ws_host, ws_port=ws_port)
+        instance.loop(
+            input_queue=input_queue,
+            output_whisper_result=output_whisper_result,
+            output_timestamps=output_timestamps,
+            proxy=proxy,
+            output_file_path=output_file_path,
+            cqhttp_url=cqhttp_url,
+            cqhttp_token=cqhttp_token,
+            discord_webhook_url=discord_webhook_url,
+            telegram_token=telegram_token,
+            telegram_chat_id=telegram_chat_id
+        )
 
     def loop(self, input_queue: queue.SimpleQueue[TranslationTask], output_whisper_result: bool,
              output_timestamps: bool, proxy: str, output_file_path: str, cqhttp_url: str, cqhttp_token: str,
@@ -69,3 +133,14 @@ class ResultExporter(LoopWorkerBase):
                 _send_to_discord(discord_webhook_url, proxies, text_to_send)
             if telegram_token and telegram_chat_id:
                 _send_to_telegram(telegram_token, telegram_chat_id, proxies, text_to_send)
+            
+            # Send to WebSocket clients
+            ws_data = {
+                'timestamp': timestamp_text if output_timestamps else None,
+                'transcribed_text': task.transcribed_text if output_whisper_result else None,
+                'translated_text': task.translated_text,
+                'time_range': [task.time_range[0], task.time_range[1]]
+            }
+            asyncio.get_event_loop().run_until_complete(
+                self.ws_server.broadcast(json.dumps(ws_data))
+            )
