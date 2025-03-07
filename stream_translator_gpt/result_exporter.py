@@ -47,6 +47,8 @@ class WebSocketServer:
         self.connected_clients = set()
         self._server = None
         self._server_task = None
+        self._loop = None
+        self._thread = None
 
     async def handler(self, websocket):
         self.connected_clients.add(websocket)
@@ -68,14 +70,27 @@ class WebSocketServer:
         await self._server.wait_closed()
 
     def run_in_thread(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(self.start_server())
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self.start_server())
 
     def start(self):
-        thread = threading.Thread(target=self.run_in_thread, daemon=True)
-        thread.start()
-        return thread
+        self._thread = threading.Thread(target=self.run_in_thread, daemon=True)
+        self._thread.start()
+        return self._thread
+
+    def send_message(self, message):
+        if self._loop is None:
+            return
+        
+        async def _send():
+            await self.broadcast(message)
+        
+        future = asyncio.run_coroutine_threadsafe(_send(), self._loop)
+        try:
+            future.result(timeout=1)  # 1 second timeout
+        except Exception as e:
+            print(f'Error sending WebSocket message: {e}')
 
 
 class ResultExporter(LoopWorkerBase):
@@ -141,11 +156,4 @@ class ResultExporter(LoopWorkerBase):
                 'translated_text': task.translated_text,
                 'time_range': [task.time_range[0], task.time_range[1]]
             }
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            loop.run_until_complete(
-                self.ws_server.broadcast(json.dumps(ws_data))
-            )
+            self.ws_server.send_message(json.dumps(ws_data))
