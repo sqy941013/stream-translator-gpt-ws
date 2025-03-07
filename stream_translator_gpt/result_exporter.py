@@ -141,6 +141,11 @@ class ResultExporter(LoopWorkerBase):
                 'translated_text': task.translated_text,
                 'time_range': [task.time_range[0], task.time_range[1]]
             }
-            asyncio.get_event_loop().run_until_complete(
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            loop.run_until_complete(
                 self.ws_server.broadcast(json.dumps(ws_data))
             )
